@@ -9,7 +9,11 @@ opencv-python>=4.1.2
 Pillow>=7.1.2
 PyYAML>=5.3.1
 requests>=2.23.0
+<<<<<<< HEAD
 scipy>=1.7.0
+=======
+scipy<=1.13.1
+>>>>>>> feature/mlab-test
 tqdm>=4.41.0
 gdown
 flask
@@ -21,6 +25,11 @@ qwen_vl_utils
 pyquaternion
 nuscenes-devkit
 openai
+accelerate
+timm
+einops
+bitsandbytes>=-0.45.5
+
 
 # # Logging -------------------------------------
 # tensorboard>=2.4.1

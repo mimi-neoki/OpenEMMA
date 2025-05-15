@@ -17,7 +17,7 @@ from scipy.integrate import cumulative_trapezoid
 import json
 from openemma.YOLO3D.inference import yolo3d_nuScenes
 from utils import EstimateCurvatureFromTrajectory, IntegrateCurvatureForPoints, OverlayTrajectory, WriteImageSequenceToVideo
-from transformers import MllamaForConditionalGeneration, AutoProcessor, Qwen2VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration, AutoTokenizer
+from transformers import MllamaForConditionalGeneration, AutoProcessor, Qwen2VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoModelForCausalLM, AutoModel
 from PIL import Image
 from qwen_vl_utils import process_vision_info
 from llava.model.builder import load_pretrained_model
@@ -26,7 +26,6 @@ from llava.utils import disable_torch_init
 from llava.mm_utils import tokenizer_image_token, process_images, get_model_name_from_path
 from llava.conversation import conv_templates
 
-client = OpenAI(api_key="[your-openai-api-key]")
 
 OBS_LEN = 10
 FUT_LEN = 10
@@ -150,11 +149,12 @@ def vlm_inference(text=None, images=None, sys_message=None, processor=None, mode
                 }
                 PROMPT_MESSAGES.append(sys_message_dict)
             params = {
-                "model": "gpt-4o-2024-11-20",
+                "model": "gpt-4.1-mini",
                 "messages": PROMPT_MESSAGES,
                 "max_tokens": 400,
             }
 
+            client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
             result = client.chat.completions.create(**params)
 
             return result.choices[0].message.content
@@ -294,6 +294,56 @@ if __name__ == '__main__':
                 tokenizer=None
     except Exception as e:
         print("模型加载出现异常：", e)
+    if "llama" in args.model_path:
+        model_id = "meta-llama/Llama-3.2-11B-Vision-Instruct"
+        model = MllamaForConditionalGeneration.from_pretrained(
+            model_id,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+        )
+        processor = AutoProcessor.from_pretrained(model_id)
+        tokenizer=None
+    elif "Llama" in args.model_path:
+        model = MllamaForConditionalGeneration.from_pretrained(
+            args.model_path,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+        )
+        processor = AutoProcessor.from_pretrained(args.model_path)
+        tokenizer=None
+    elif "qwen" in args.model_path:
+        model = Qwen2VLForConditionalGeneration.from_pretrained("Qwen/Qwen2-VL-7B-Instruct", torch_dtype=torch.bfloat16, device_map="auto")
+        processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
+        tokenizer=None
+    elif "Qwen" in args.model_path:
+        model = Qwen2VLForConditionalGeneration.from_pretrained(args.model_path, torch_dtype=torch.bfloat16, device_map="auto")
+        processor = AutoProcessor.from_pretrained(args.model_path)
+        tokenizer=None
+    elif "InternVL3" in args.model_path:
+        # Add InternVL3-38B support
+        model = AutoModel.from_pretrained(
+            args.model_path,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            low_cpu_mem_usage=True,
+            load_in_8bit=True,
+            use_flash_attn=True,
+        )
+        processor = AutoProcessor.from_pretrained(args.model_path)
+        tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+    elif 'llava' == args.model_path:
+        disable_torch_init()
+        tokenizer, model, processor, context_len = load_pretrained_model("liuhaotian/llava-v1.6-mistral-7b", None, "llava-v1.6-mistral-7b")
+        image_token_se = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
+    elif "llava" in args.model_path:
+        disable_torch_init()
+        tokenizer, model, processor, context_len = load_pretrained_model(args.model_path, None, "llava-v1.6-mistral-7b")
+        image_token_se = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
+        
+    else:
+        model = None
+        processor = None
+        tokenizer=None
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     timestamp = args.model_path + f"_results/{args.method}/" + timestamp
@@ -314,8 +364,8 @@ if __name__ == '__main__':
         name = scene['name']
         description = scene['description']
 
-        if not name in ["scene-0103", "scene-1077"]:
-            continue
+        # if not name in ["scene-0103", "scene-1077"]:
+        #     continue
 
         # Get all image and pose in this scene
         front_camera_images = []
@@ -519,63 +569,4 @@ if __name__ == '__main__':
             WriteImageSequenceToVideo(cam_images_sequence, f"{timestamp}/{name}")
 
         # break  # Scenes
-
-
-def vlm_inference(text=None, images=None, sys_message=None, processor=None, model=None, tokenizer=None, args=None):
-    if ("qwen" in args.model_path or "Qwen" in args.model_path):
-        # 判断是否为Qwen2.5-VL-3B-Instruct（新版）
-        if hasattr(model, "model_type") and getattr(model, "model_type", "") == "qwen2_5_vl":
-            # Qwen2.5-VL-3B-Instruct官方推荐推理方式
-            message = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": images},
-                        {"type": "text", "text": text}
-                    ]
-                }
-            ]
-            text_prompt = processor.apply_chat_template(
-                message, tokenize=False, add_generation_prompt=True
-            )
-            image_inputs, video_inputs = process_vision_info(message)
-            inputs = processor(
-                text=[text_prompt],
-                images=image_inputs,
-                videos=video_inputs,
-                padding=True,
-                return_tensors="pt",
-            )
-            inputs = inputs.to(model.device)
-            generated_ids = model.generate(**inputs, max_new_tokens=128)
-            generated_ids_trimmed = [
-                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-            ]
-            output_text = processor.batch_decode(
-                generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-            )
-            return output_text[0]
-        else:
-            # 兼容Qwen2-VL-7B-Instruct等老模型
-            message = getMessage(text, image=images, args=args)
-            text_prompt = processor.apply_chat_template(
-                message, tokenize=False, add_generation_prompt=True
-            )
-            image_inputs, video_inputs = process_vision_info(message)
-            inputs = processor(
-                text=[text_prompt],
-                images=image_inputs,
-                videos=video_inputs,
-                padding=True,
-                return_tensors="pt",
-            ).to(model.device)
-            generated_ids = model.generate(**inputs, max_new_tokens=128)
-            generated_ids_trimmed = [
-                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-            ]
-            output_text = processor.batch_decode(
-                generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-            )
-            return output_text[0]
-    # ... 其它模型推理逻辑保持不变 ...
 

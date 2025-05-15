@@ -7,6 +7,7 @@ __pycache__/
 venv/
 env/
 .env
+.venv/
 
 # IDE
 .idea/
@@ -18,3 +19,4 @@ env/
 
 # Project specific
 gpt_results/
+qwen_results/
